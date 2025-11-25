@@ -125,13 +125,13 @@ class UNet(nn.Module):
         h = self.mid_attn_block(h)
         h = self.mid_resnet_block_2(h, cond)
         
-        for up_block in self.up_blocks:  # n_blocks+1 times
+        for up_block in self.up_blocks:
             h = torch.cat([h, hs.pop()], dim=1)
             h = up_block(h, cond)
             
         prediction = self.conv_out(h)
         assert prediction.shape == z.shape, (prediction.shape, z.shape)
-        return prediction + z  # Residual connection
+        return prediction
 
 def get_timestep_embedding(
     timesteps,

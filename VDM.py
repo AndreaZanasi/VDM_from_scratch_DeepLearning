@@ -30,16 +30,7 @@ class LearnedSchedule(nn.Module):
     def forward(self, t):
         t = t.view(-1, 1)
         
-        with torch.no_grad():
-            self.l1.weight.clamp_(min=0)
-            self.l2.weight.clamp_(min=0)
-            self.l3.weight.clamp_(min=0)
-        
-        l1_out = self.l1(t)
-        l2_out = self.l2(l1_out)
-        l2_out = torch.sigmoid(l2_out)
-        l3_out = self.l3(l2_out)
-        gamma_tilde = l1_out + l3_out
+        gamma_tilde = self.forward_tilde(t)
         
         gamma_tilde_0 = self.forward_tilde(torch.zeros_like(t))
         gamma_tilde_1 = self.forward_tilde(torch.ones_like(t))
@@ -51,10 +42,17 @@ class LearnedSchedule(nn.Module):
         return gamma_t.squeeze(-1)
     
     def forward_tilde(self, t):
-        l1_out = self.l1(t)
-        l2_out = self.l2(l1_out)
+        # Use functional linear with clamped weights to enforce monotonicity
+        # without modifying weights in-place during forward pass
+        w1 = self.l1.weight.clamp(min=0)
+        b1 = self.l1.bias
+        w2 = self.l2.weight.clamp(min=0)
+        w3 = self.l3.weight.clamp(min=0)
+        
+        l1_out = torch.nn.functional.linear(t, w1, b1)
+        l2_out = torch.nn.functional.linear(l1_out, w2)
         l2_out = torch.sigmoid(l2_out)
-        l3_out = self.l3(l2_out)
+        l3_out = torch.nn.functional.linear(l2_out, w3)
         return l1_out + l3_out
 
 class ForwardDiffusion(nn.Module):
@@ -168,10 +166,10 @@ class VDM(nn.Module):
         z_0 = (z_t - get_sigma(gamma_t.view(B, 1, 1, 1)) * eps_hat) / get_alpha(gamma_t.view(B, 1, 1, 1))
         
         x_vals = 2 * ((torch.arange(self.vocab_size, device=self.device).float() + 0.5) / self.vocab_size) - 1
-        mu_vals = alpha_0 * x_vals.view(1, 1, 1, 1, -1)
+        mu_vals = alpha_0.unsqueeze(-1) * x_vals.view(1, 1, 1, 1, -1)
         
         z_0_exp = z_0.unsqueeze(-1)
-        dist_sq = ((z_0_exp - mu_vals) ** 2) / (sigma_0 ** 2)
+        dist_sq = ((z_0_exp - mu_vals) ** 2) / (sigma_0.unsqueeze(-1) ** 2)
         logits = -0.5 * dist_sq
         
         log_probs = torch.log_softmax(logits, dim=-1)
