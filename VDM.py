@@ -1,6 +1,6 @@
 import torch
 import numpy as np
-from torch import allclose, argmax, autograd, exp, linspace, nn, sigmoid, sqrt
+from torch import nn, sigmoid, sqrt, exp
 from torch.special import expm1
 
 def get_alpha(gamma):
@@ -12,164 +12,178 @@ def get_sigma(gamma):
 def get_snr(gamma):
     return exp(-gamma)
 
-class ForwardDiffusion(nn.Module):
-    def __init__(self, gamma_min, gamma_max, batch_size, device):
+class LearnedSchedule(nn.Module):
+    def __init__(self, gamma_min=-13.3, gamma_max=5.0):
         super().__init__()
-        self.gamma = LearnedSchedule(gamma_min, gamma_max)
-        self.batch_size = batch_size
-        self.device = device
+        self.gamma_min = gamma_min
+        self.gamma_max = gamma_max
+        
+        self.l1 = nn.Linear(1, 1, bias=True)
+        self.l2 = nn.Linear(1, 1024, bias=False)
+        self.l3 = nn.Linear(1024, 1, bias=False)
+        
+        with torch.no_grad():
+            self.l1.weight.abs_()
+            self.l2.weight.abs_()
+            self.l3.weight.abs_()
+
+    def forward(self, t):
+        t = t.view(-1, 1)
+        
+        with torch.no_grad():
+            self.l1.weight.clamp_(min=0)
+            self.l2.weight.clamp_(min=0)
+            self.l3.weight.clamp_(min=0)
+        
+        l1_out = self.l1(t)
+        l2_out = self.l2(l1_out)
+        l2_out = torch.sigmoid(l2_out)
+        l3_out = self.l3(l2_out)
+        gamma_tilde = l1_out + l3_out
+        
+        gamma_tilde_0 = self.forward_tilde(torch.zeros_like(t))
+        gamma_tilde_1 = self.forward_tilde(torch.ones_like(t))
+        
+        gamma_t = self.gamma_min + (self.gamma_max - self.gamma_min) * (
+            (gamma_tilde - gamma_tilde_0) / (gamma_tilde_1 - gamma_tilde_0)
+        )
+        
+        return gamma_t.squeeze(-1)
+    
+    def forward_tilde(self, t):
+        l1_out = self.l1(t)
+        l2_out = self.l2(l1_out)
+        l2_out = torch.sigmoid(l2_out)
+        l3_out = self.l3(l2_out)
+        return l1_out + l3_out
+
+class ForwardDiffusion(nn.Module):
+    def __init__(self, gamma):
+        super().__init__()
+        self.gamma = gamma
 
     def sample_z(self, x, t, noise=None):
-        with torch.enable_grad():
-            gamma_t = self.gamma(t)
-
+        gamma_t = self.gamma(t)
         gamma_t_padded = gamma_t.view(-1, *([1] * (x.ndim - 1)))
-        sigma_t = get_sigma(gamma_t_padded)
+        
         alpha_t = get_alpha(gamma_t_padded)
-        mean = alpha_t * x
+        sigma_t = get_sigma(gamma_t_padded)
+        
         if noise is None:
             noise = torch.randn_like(x)
-
-        return mean + noise * sigma_t, gamma_t, noise
+        
+        z_t = alpha_t * x + sigma_t * noise
+        return z_t, gamma_t, noise
 
 class ReverseDiffusion(nn.Module):
-    def __init__(self, model, gamma, device):
+    def __init__(self, model, gamma):
         super().__init__()
         self.model = model
         self.gamma = gamma
-        self.device = device
     
     @torch.no_grad()
-    def ancestral_sampling(self, z, t, s):
-        gamma_t = self.gamma(t)
-        gamma_s = self.gamma(s)
-        c = -expm1(gamma_s - gamma_t)
-        alpha_t = get_alpha(gamma_t)
-        alpha_s = get_alpha(gamma_s)
-        sigma_t = get_sigma(gamma_t)
-        sigma_s = get_sigma(gamma_s)
-        predicted_noise = self.model(z, gamma_t)
-
-        mean = alpha_s/alpha_t * (z - sigma_t * c * predicted_noise)
-        scale = sigma_s * sqrt(c)
-        
-        return mean + scale * torch.randn_like(z)
-    
-    @torch.no_grad()
-    def sample(self, batch_size, image_shape, T=250):
-
-        z = torch.randn((batch_size, *image_shape), device=self.device)
-        steps = linspace(1.0, 0.0, T + 1, device=self.device)
+    def sample(self, batch_size, image_shape, T=1000, device='cuda'):
+        z = torch.randn((batch_size, *image_shape), device=device)
+        steps = torch.linspace(1.0, 0.0, T + 1, device=device)
         
         for i in range(T):
-            t = steps[i]
-            s = steps[i + 1]
-            z = self.ancestral_sampling(z, t, s)
+            t = steps[i].expand(batch_size)
+            s = steps[i + 1].expand(batch_size)
+            
+            gamma_t = self.gamma(t)
+            gamma_s = self.gamma(s)
+            
+            gamma_t_padded = gamma_t.view(-1, *([1] * (len(image_shape) + 1)))
+            gamma_s_padded = gamma_s.view(-1, *([1] * (len(image_shape) + 1)))
+            
+            alpha_t = get_alpha(gamma_t_padded)
+            alpha_s = get_alpha(gamma_s_padded)
+            sigma_t = get_sigma(gamma_t_padded)
+            sigma_s = get_sigma(gamma_s_padded)
+            
+            eps_hat = self.model(z, gamma_t)
+            
+            c = -expm1(gamma_s_padded - gamma_t_padded)
+            mean = (alpha_s / alpha_t) * (z - sigma_t * c * eps_hat)
+            
+            if i < T - 1:
+                noise = torch.randn_like(z)
+                z = mean + sigma_s * sqrt(c) * noise
+            else:
+                z = mean
         
-        return (z + 1) / 2
-    
+        z = torch.clamp((z + 1) / 2, 0, 1)
+        return z
+
 class VDM(nn.Module):    
-    def __init__(self, model, gamma_min, gamma_max, batch_size=128,
-                 vocab_size=256, device='cuda', T=250):
+    def __init__(self, model, gamma_min=-13.3, gamma_max=5.0, 
+                 vocab_size=256, T=1000, device='cuda'):
         super().__init__()
         self.model = model
         self.vocab_size = vocab_size
         self.device = device
         self.T = T
-
-        self.forward_diffusion = ForwardDiffusion(gamma_min, gamma_max, batch_size, device)
-        self.gamma = self.forward_diffusion.gamma
-        self.reverse_diffusion = ReverseDiffusion(model, self.gamma, device)
         
+        self.gamma = LearnedSchedule(gamma_min, gamma_max)
+        self.forward_diffusion = ForwardDiffusion(self.gamma)
+        self.reverse_diffusion = ReverseDiffusion(model, self.gamma)
     
-    def forward(self, batch, noise=None):
+    def forward(self, batch):
         if isinstance(batch, (tuple, list)) and len(batch) == 2:
             x, _ = batch
         else:
             x = batch
-
-        x_int = torch.round(x * (self.vocab_size - 1)).long()
-        x = 2 * ((x_int + 0.5) / self.vocab_size) - 1
-
-        s, t = self.sample_s_and_t(x.shape[0])
-        s.requires_grad_(True)
-        t.requires_grad_(True)
-
-        z_t, gamma_t, eps = self.forward_diffusion.sample_z(x, t, noise)
-        eps_hat = self.model(z_t, gamma_t)
-        loss = self.get_loss(s, t, eps, eps_hat)
         
-        return loss.mean(), {"loss": loss.mean()}
-
-    def get_diffusion_loss(self, s, t, eps, eps_hat):
+        x = x.to(self.device)
+        B = x.shape[0]
+        
+        x_int = torch.round(x * (self.vocab_size - 1)).long()
+        x_cont = 2 * ((x_int + 0.5) / self.vocab_size) - 1
+        
+        i = torch.randint(1, self.T + 1, (B,), device=self.device)
+        t = i.float() / self.T
+        s = (i - 1).float() / self.T
+        
+        z_t, gamma_t, eps = self.forward_diffusion.sample_z(x_cont, t)
+        eps_hat = self.model(z_t, gamma_t)
+        
         gamma_s = self.gamma(s)
-        gamma_t = self.gamma(t)
-
-        weight = torch.expm1(gamma_t - gamma_s)
+        snr_s = get_snr(gamma_s)
+        snr_t = get_snr(gamma_t)
+        weight = snr_s - snr_t
+        
         mse = ((eps - eps_hat) ** 2).mean(dim=(1, 2, 3))
-
-        return 0.5 * self.T * weight * mse
-
-    def get_prior_loss(self, x):
-        gamma_1 = self.gamma(torch.ones(x.size(0), device=self.device))
-        gamma_1_expanded = gamma_1.view(-1, *([1] * (x.ndim - 1)))
-
-        alpha_1 = get_alpha(gamma_1_expanded)
-        sigma_1 = get_sigma(gamma_1_expanded)
-
-        mu_1 = alpha_1 * x
-        var_1 = sigma_1 ** 2
-
-        kl = 0.5 * (var_1 + mu_1**2 - 1 - torch.log(var_1))
-
-        return kl.view(x.size(0), -1).sum(dim=1)
-
-    def get_reconstruction_loss(self, x, z0):
-        B, C, H, W = x.shape
-        device = self.device
-
-        gamma_0 = self.gamma(torch.zeros(B, device=device))
-        gamma_0 = gamma_0.view(-1, 1, 1, 1)
-
-        alpha_0 = get_alpha(gamma_0)
-        sigma_0 = get_sigma(gamma_0)
-
-        ks = torch.arange(self.vocab_size, device=device).float()
-        ks = ks.view(1, -1, 1, 1, 1)
-
-        xk = 2 * ((ks + 0.5) / self.vocab_size) - 1   
-        mu_k = alpha_0 * xk                           
-        sigma2 = sigma_0**2                           
-
-        z0_exp = z0.unsqueeze(1)                     
-
-        dist2 = ((z0_exp - mu_k)**2).sum(dim=2)       
-
-        logits = -0.5 * dist2 / sigma2
-
-        x_long = x.long()                             
-        x_long = x_long.view(B, -1)                   
-
-        logits_flat = logits.view(B, self.vocab_size, -1)
-
-        log_p = torch.log_softmax(logits_flat, dim=1)
-        chosen = log_p.gather(1, x_long.unsqueeze(1)).squeeze(1)
-
-        chosen = chosen.view(B, C, H, W)
-
-        return -chosen.view(B, -1).sum(dim=1)
-    
-    def sample_s_and_t(self, batch_size):
-        i = torch.randint(1, self.T + 1, (batch_size,), device=self.device)
-        t = i / self.T
-        s = (i - 1) / self.T
-        return s, t
-
-class LearnedSchedule(nn.Module):
-    def __init__(self, gamma_min, gamma_max):
-        super().__init__()
-        self.b = nn.Parameter(torch.tensor(gamma_min))
-        self.w = nn.Parameter(torch.tensor(gamma_max - gamma_min))
-
-    def forward(self, t):
-        return self.b + self.w.abs() * t
+        diffusion_loss = 0.5 * self.T * weight * mse
+        
+        gamma_1 = self.gamma(torch.ones(B, device=self.device))
+        snr_1 = get_snr(gamma_1)
+        mean_sq = (snr_1 / (snr_1 + 1)).view(B, 1, 1, 1) * (x_cont ** 2)
+        prior_loss = 0.5 * mean_sq.view(B, -1).sum(dim=1)
+        
+        gamma_0 = self.gamma(torch.zeros(B, device=self.device))
+        gamma_0_padded = gamma_0.view(B, 1, 1, 1)
+        alpha_0 = get_alpha(gamma_0_padded)
+        sigma_0 = get_sigma(gamma_0_padded)
+        
+        z_0 = (z_t - get_sigma(gamma_t.view(B, 1, 1, 1)) * eps_hat) / get_alpha(gamma_t.view(B, 1, 1, 1))
+        
+        x_vals = 2 * ((torch.arange(self.vocab_size, device=self.device).float() + 0.5) / self.vocab_size) - 1
+        mu_vals = alpha_0 * x_vals.view(1, 1, 1, 1, -1)
+        
+        z_0_exp = z_0.unsqueeze(-1)
+        dist_sq = ((z_0_exp - mu_vals) ** 2) / (sigma_0 ** 2)
+        logits = -0.5 * dist_sq
+        
+        log_probs = torch.log_softmax(logits, dim=-1)
+        x_int_exp = x_int.unsqueeze(-1)
+        reconstruction_loss = -log_probs.gather(-1, x_int_exp).squeeze(-1)
+        reconstruction_loss = reconstruction_loss.view(B, -1).sum(dim=1)
+        
+        loss = diffusion_loss + prior_loss + reconstruction_loss
+        
+        return loss.mean(), {
+            "loss": loss.mean().item(),
+            "diffusion": diffusion_loss.mean().item(),
+            "prior": prior_loss.mean().item(),
+            "reconstruction": reconstruction_loss.mean().item()
+        }

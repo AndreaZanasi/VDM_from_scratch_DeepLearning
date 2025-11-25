@@ -12,7 +12,7 @@ def zero_init(module):
 class UNet(nn.Module):
     def __init__(self, 
             embedding_dim = 128,
-            n_blocks = 4,
+            n_blocks = 32,
             n_attention_heads = 1,
             dropout_prob = 0.1,
             norm_groups = 32,
@@ -42,7 +42,7 @@ class UNet(nn.Module):
         )
         
         if use_fourier_features:
-            self.fourier_features = FourierFeatures()
+            self.fourier_features = FourierFeatures(first=7.0, last=8.0, step=1.0)
             self.use_fourier_features = True
         else:
             self.use_fourier_features = False
