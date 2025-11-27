@@ -148,7 +148,7 @@ class Trainer:
     
     def handle_checkpoints(self, current_loss, epoch):
         # Always save last model
-        last_path = os.path.join(self.save_dir, "last_model.pt")
+        last_path = os.path.join(self.save_dir, self.config.get('last_model_path', 'last_model.pt'))
         torch.save({
             'epoch': epoch,
             'model_state_dict': self.model.state_dict(),
@@ -163,7 +163,7 @@ class Trainer:
         if current_loss < self.best_loss:
             improvement = self.best_loss - current_loss
             self.best_loss = current_loss
-            best_path = os.path.join(self.save_dir, "best_model.pt")
+            best_path = os.path.join(self.save_dir, self.config.get('best_model_path', 'best_model.pt'))
             torch.save({
                 'epoch': epoch,
                 'model_state_dict': self.model.state_dict(),

@@ -12,7 +12,7 @@ CONFIG = {
         'device': 'cuda' if torch.cuda.is_available() else 'cpu',
         'lr': 2e-4,
         'batch_size': 64,
-        'epochs': 500,
+        'epochs': 1000,
         'save_dir': './checkpoints',
         'embedding_dim': 64,
         'n_blocks': 4,
@@ -27,7 +27,10 @@ CONFIG = {
         'use_fourier_features': True,
         'attention_everywhere': True,
         'num_samples': 64,
-        'sample_path': './samples/generated_samples.png'
+        'sample_path': './samples',
+        'learned_schedule': True,
+        'best_model_path': 'learned_best_model.pt',
+        'last_model_path': 'learned_last_model.pt',
     }
 
 def init_models():
@@ -51,7 +54,7 @@ def init_models():
         vocab_size=CONFIG['vocab_size'],
         T=CONFIG['T'],
         device=CONFIG['device'],
-        learned_schedule=False  
+        learned_schedule=CONFIG['learned_schedule']
     ).to(CONFIG['device'])
 
     return vdm, unet
@@ -70,7 +73,7 @@ def train(vdm, unet):
     print(f"Trainable Parameters: {trainable_params:,}")
     print("\nStarting training...")
 
-    checkpoint_path = os.path.join(CONFIG['save_dir'], "best_model.pt")
+    checkpoint_path = os.path.join(CONFIG['save_dir'], CONFIG['best_model_path'])
     if os.path.exists(checkpoint_path):
         trainer.load_checkpoint(checkpoint_path)
 
@@ -86,7 +89,7 @@ def train(vdm, unet):
 
 def sample(vdm):
     print("Sampling...")
-    checkpoint = torch.load(f'{CONFIG["save_dir"]}/best_model.pt')
+    checkpoint = torch.load(f'{CONFIG["save_dir"]}/{CONFIG["best_model_path"]}')
     vdm.load_state_dict(checkpoint['model_state_dict'])
     vdm.eval()
     
@@ -106,8 +109,8 @@ def sample(vdm):
     plt.axis('off')
     plt.title(f"Generated Samples")
     plt.tight_layout()
-    plt.savefig(CONFIG['sample_path'], dpi=150, bbox_inches='tight')
-    print(f"✓ Samples saved to {CONFIG['sample_path']}")
+    plt.savefig(os.path.join(CONFIG['sample_path'], "generated_samples.png"), dpi=150, bbox_inches='tight')
+    print(f"✓ Samples saved to {os.path.join(CONFIG['sample_path'], 'generated_samples.png')}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
