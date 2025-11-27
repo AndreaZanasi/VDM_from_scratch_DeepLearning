@@ -1,7 +1,7 @@
 import torch
 from unet import UNet
 from vdm import VDM
-from DataProvider import DataProvider
+from data_provider import DataProvider
 from Trainer import Trainer
 import matplotlib.pyplot as plt
 import os
