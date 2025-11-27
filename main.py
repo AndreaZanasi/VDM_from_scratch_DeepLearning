@@ -6,7 +6,6 @@ from trainer import Trainer
 import matplotlib.pyplot as plt
 import os
 from torchvision.utils import make_grid
-import time
 import argparse
 
 CONFIG = {
