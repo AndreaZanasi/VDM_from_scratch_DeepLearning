@@ -93,7 +93,7 @@ def sample(vdm):
     with torch.no_grad():
         samples = vdm.reverse_diffusion.sample(
             batch_size=CONFIG['num_samples'], 
-            image_shape=(3, 32, 32), 
+            shape=(3, 32, 32), 
             T=CONFIG['T'], 
             device=CONFIG['device']
         )
