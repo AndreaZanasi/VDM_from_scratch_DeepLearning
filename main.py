@@ -15,8 +15,8 @@ CONFIG = {
         'epochs': 1000,
         'save_dir': './checkpoints',
         'embedding_dim': 64,
-        'n_blocks': 4,
-        'n_attention_heads': 4,
+        'n_blocks': 16,
+        'n_attention_heads': 8,
         'dropout_prob': 0.1,
         'norm_groups': 32,
         'input_channels': 3,
@@ -29,8 +29,8 @@ CONFIG = {
         'num_samples': 64,
         'sample_path': './samples',
         'learned_schedule': True,
-        'best_model_path': 'learned_best_model.pt',
-        'last_model_path': 'learned_last_model.pt',
+        'best_model_path': 'learned_best_model2.pt',
+        'last_model_path': 'learned_last_model2.pt',
     }
 
 def init_models():
