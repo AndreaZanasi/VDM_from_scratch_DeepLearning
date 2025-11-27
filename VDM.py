@@ -1,100 +1,47 @@
 import torch
-import numpy as np
-from torch import nn, sigmoid, sqrt, exp
+from torch import nn, sigmoid, sqrt, exp, log_softmax
 from torch.special import expm1
 from tqdm import tqdm
+from noise_scheduler import LinearSchedule, LearnedSchedule
 
 def get_alpha(gamma):
     return sqrt(sigmoid(-gamma))
 
-
 def get_sigma(gamma):
     return sqrt(sigmoid(gamma))
-
 
 def get_snr(gamma):
     return exp(-gamma)
 
-
-class FixedLinearSchedule(nn.Module):
-    def __init__(self, gamma_min=-13.3, gamma_max=5.0):
-        super().__init__()
-        self.gamma_min = gamma_min
-        self.gamma_max = gamma_max
-
-    def forward(self, t):
-        # t in [0, 1]
-        return self.gamma_min + t * (self.gamma_max - self.gamma_min)
-
-
-class LearnedSchedule(nn.Module):
-    def __init__(self, gamma_min=-13.3, gamma_max=5.0):
-        super().__init__()
-        self.gamma_min = gamma_min
-        self.gamma_max = gamma_max
-
-        self.l1 = nn.Linear(1, 1, bias=True)
-        self.l2 = nn.Linear(1, 1024, bias=False)
-        self.l3 = nn.Linear(1024, 1, bias=False)
-
-        # Initialize weights non-negative to encourage monotonicity
-        with torch.no_grad():
-            self.l1.weight.abs_()
-            self.l2.weight.abs_()
-            self.l3.weight.abs_()
-
-    def forward(self, t):
-        # t: (B,) or (B,1) in [0,1]
-        t = t.view(-1, 1)
-
-        gamma_tilde = self.forward_tilde(t)
-
-        gamma_tilde_0 = self.forward_tilde(torch.zeros_like(t))
-        gamma_tilde_1 = self.forward_tilde(torch.ones_like(t))
-
-        # Rescale to [gamma_min, gamma_max]
-        gamma_t = self.gamma_min + (self.gamma_max - self.gamma_min) * (
-            (gamma_tilde - gamma_tilde_0) / (gamma_tilde_1 - gamma_tilde_0)
-        )
-
-        return gamma_t.squeeze(-1)
-
-    def forward_tilde(self, t):
-        # Monotone scalar MLP with clamped weights
-        w1 = self.l1.weight.clamp(min=0)
-        b1 = self.l1.bias
-        w2 = self.l2.weight.clamp(min=0)
-        w3 = self.l3.weight.clamp(min=0)
-
-        l1_out = torch.nn.functional.linear(t, w1, b1)
-        l2_out = torch.nn.functional.linear(l1_out, w2)
-        l2_out = torch.sigmoid(l2_out)
-        l3_out = torch.nn.functional.linear(l2_out, w3)
-        return l1_out + l3_out
-
-
 class ForwardDiffusion(nn.Module):
-    def __init__(self, gamma):
+    def __init__(self, gamma_schedule):
         super().__init__()
-        self.gamma = gamma
+        self.gamma = gamma_schedule
 
-    def sample_z(self, x, t, noise=None):
+    def forward(self, x, t, eps=None):
         """
-        x: (B, C, H, W) in [-1, 1]
-        t: (B,) in [0,1]
+        Sample z_t given x and timestep t, we get a noisy version of x at time t.
+        Args:
+            x: (B, C, H, W) input data in [-1, 1] : clean data
+            t: (B,) timesteps in [0, 1] : normalized time
+            eps: (B, C, H, W) optional noise to use, if None sampled from N(0, I) : noise
+        Returns:
+            z_t: (B, C, H, W) noisy data at time t
+            gamma_t: (B,) gamma values at time t
+            eps: (B, C, H, W) noise used
         """
-        gamma_t = self.gamma(t)  # (B,)
+        gamma_t = self.gamma(t)
         gamma_t_padded = gamma_t.view(-1, *([1] * (x.ndim - 1)))
-
+        
         alpha_t = get_alpha(gamma_t_padded)
         sigma_t = get_sigma(gamma_t_padded)
-
-        if noise is None:
-            noise = torch.randn_like(x)
-
-        z_t = alpha_t * x + sigma_t * noise
-        return z_t, gamma_t, noise
-
+        
+        if eps is None:
+            eps = torch.randn_like(x)
+        
+        z_t = alpha_t * x + sigma_t * eps
+        
+        return z_t, gamma_t, eps
 
 class ReverseDiffusion(nn.Module):
     def __init__(self, model, gamma):
@@ -103,41 +50,168 @@ class ReverseDiffusion(nn.Module):
         self.gamma = gamma
 
     @torch.no_grad()
-    def sample(self, batch_size, image_shape, T=1000, device='cuda'):
-        # image_shape: (C, H, W)
-        z = torch.randn((batch_size, *image_shape), device=device)  # (B, C, H, W)
-        steps = torch.linspace(1.0, 0.0, T + 1, device=device)
+    def sample(self, batch_size, shape, T=1000, device='cuda'):
+        """
+        Sample from the reverse diffusion process.
+        Args:
+            batch_size: int, number of samples to generate
+            shape: tuple, shape of each sample (C, H, W)
+            T: int, number of diffusion steps
+            device: str, device to perform computation on
+        Returns:
+            z: (B, C, H, W) generated samples in [0, 1]
+        """
+        z = torch.randn(batch_size, *shape, device=device)
+        timesteps = torch.linspace(1.0, 0.0, T + 1, device=device)
 
-        for i in tqdm(range(T), desc='Reverse Diffusion Sampling'):
-            t = steps[i].expand(batch_size)      # (B,)
-            s = steps[i + 1].expand(batch_size)  # (B,)
+        for i in tqdm(range(T), desc='Sampling'):
+            t = timesteps[i].expand(batch_size)
+            s = timesteps[i + 1].expand(batch_size)
+            is_last_step = (i == T - 1)
 
-            gamma_t = self.gamma(t)              # (B,)
-            gamma_s = self.gamma(s)              # (B,)
-
-            # pad to (B, 1, 1, 1) to match z: (B, C, H, W)
-            gamma_t_padded = gamma_t.view(-1, *([1] * (z.ndim - 1)))  # (B,1,1,1)
-            gamma_s_padded = gamma_s.view(-1, *([1] * (z.ndim - 1)))  # (B,1,1,1)
-
-            alpha_t = get_alpha(gamma_t_padded)
-            alpha_s = get_alpha(gamma_s_padded)
-            sigma_t = get_sigma(gamma_t_padded)
-            sigma_s = get_sigma(gamma_s_padded)
-
-            eps_hat = self.model(z, gamma_t)     # UNet sees (B, C, H, W) and (B,)
-
-            c = -expm1(gamma_s_padded - gamma_t_padded)
-            mean = (alpha_s / alpha_t) * (z - sigma_t * c * eps_hat)
-
-            if i < T - 1:
-                noise = torch.randn_like(z)
-                z = mean + sigma_s * torch.sqrt(c) * noise
-            else:
-                z = mean
+            z = self.denoise_step(z, t, s, is_last_step)
 
         z = torch.clamp((z + 1) / 2, 0, 1)
         return z
 
+    def denoise_step(self, z_t, t, s, last_step):
+        """
+        Perform a single denoising step from z_t at time t to z_s at time s.
+        Args:
+            z_t: (B, C, H, W) noisy data at time t
+            t: (B,) current timesteps
+            s: (B,) next timesteps
+            last_step: bool, whether this is the last denoising step
+        Returns:
+            z_s: (B, C, H, W) denoised data at time s
+        """
+        gamma_t = self.gamma(t)
+        gamma_s = self.gamma(s)
+        
+        gamma_t_expanded = gamma_t.view(-1, *([1] * (z_t.ndim - 1)))
+        gamma_s_expanded = gamma_s.view(-1, *([1] * (z_t.ndim - 1)))
+        
+        alpha_t = get_alpha(gamma_t_expanded)
+        alpha_s = get_alpha(gamma_s_expanded)
+        sigma_t = get_sigma(gamma_t_expanded)
+        sigma_s = get_sigma(gamma_s_expanded)
+        
+        eps_hat = self.model(z_t, gamma_t)
+        
+        c = -expm1(gamma_s_expanded - gamma_t_expanded)
+        mean = (alpha_s / alpha_t) * (z_t - sigma_t * c * eps_hat)
+        
+        if not last_step:
+            noise = torch.randn_like(z_t)
+            z_s = mean + sigma_s * torch.sqrt(c) * noise
+        else:
+            z_s = mean
+        
+        return z_s
+
+class DiffusionLoss(nn.Module):
+    def __init__(self, gamma, gamma_min, gamma_max):
+        super().__init__()
+        self.gamma = gamma
+        self.gamma_min = gamma_min
+        self.gamma_max = gamma_max
+
+    def forward(self, eps, eps_hat):
+        """
+        Compute the diffusion loss between true noise and predicted noise.
+        It measures how well the model predicts the noise added during the forward diffusion process.
+        Args:
+            eps: (B, C, H, W) true noise added
+            eps_hat: (B, C, H, W) predicted noise by the model
+        Returns:
+            loss: (B,) diffusion loss for each sample in the batch
+        """
+        dgamma_dt = self.gamma_max - self.gamma_min
+        mse = ((eps - eps_hat) ** 2).mean(dim=(1, 2, 3))
+        return 0.5 * dgamma_dt * mse
+
+class PriorLoss(nn.Module):
+    def __init__(self, gamma, device):
+        super().__init__()
+        self.gamma = gamma
+        self.device = device
+
+    def forward(self, x, batch_size):
+        """
+        Compute the prior loss, it measures how well the model's prior matches the data distribution.
+        Args:
+            x: (B, C, H, W) input data in [-1, 1]
+            batch_size: int, number of samples in the batch
+        Returns:
+            loss: (B,) prior loss for each sample in the batch
+        """
+        gamma_1 = self.gamma(torch.ones(batch_size, device=self.device))
+        snr_1 = get_snr(gamma_1)
+        
+        prior_factor = (snr_1 / (snr_1 + 1)).view(batch_size, 1, 1, 1)
+        return (prior_factor * (x ** 2)).mean(dim=(1, 2, 3))
+
+class ReconstructionLoss(nn.Module):
+    def __init__(self, forward_diffusion, vocab_size, device):
+        super().__init__()
+        self.forward_diffusion = forward_diffusion
+        self.vocab_size = vocab_size
+        self.device = device
+
+    def forward(self, x_int, x_cont, batch_size):
+        """
+        Compute the reconstruction loss, measuring how well the model can reconstruct
+        the original discrete data from the noisy continuous data.
+        Args:
+            x_int: (B, C, H, W) discrete input data as integers
+            x_cont: (B, C, H, W) continuous input data in [-1, 1]
+            batch_size: int, number of samples in the batch
+        Returns:
+            loss: (B,) reconstruction loss for each sample in the batch
+        """
+        t_0 = torch.zeros(batch_size, device=self.device)
+        z_0, gamma_0, _ = self.forward_diffusion(x_cont, t_0)
+        
+        gamma_0 = gamma_0.view(batch_size, 1, 1, 1)
+        alpha_0 = get_alpha(gamma_0)
+        sigma_0 = get_sigma(gamma_0)
+        
+        x_vals = self.get_discrete_values()
+        mu_vals = alpha_0.unsqueeze(-1) * x_vals.view(1, 1, 1, 1, -1)
+        
+        logits = self.compute_logits(z_0, mu_vals, sigma_0)
+        log_probs = log_softmax(logits, dim=-1)
+        
+        x_int_padded = x_int.unsqueeze(-1)
+        nll = -log_probs.gather(-1, x_int_padded).squeeze(-1)
+        
+        return nll.mean(dim=(1, 2, 3))
+
+    def get_discrete_values(self):
+        """
+        Get the discrete values in [-1, 1] corresponding to the vocabulary size.
+        It creates a tensor of shape (vocab_size,) where each value represents
+        the center of each discrete bin in the continuous space.
+        Returns:
+            bins: (vocab_size,) discrete values in [-1, 1]
+        """
+        bins = torch.arange(self.vocab_size, device=self.device).float()
+        return 2 * ((bins + 0.5) / self.vocab_size) - 1
+
+    def compute_logits(self, z_0, mu_vals, sigma_0):
+        """
+        Compute the logits for the reconstruction loss.
+        It calculates the negative squared distance between the noisy data z_0
+        and the means mu_vals, scaled by the variance sigma_0.
+        Args:
+            z_0: (B, C, H, W) noisy data at time 0
+            mu_vals: (1, 1, 1, 1, V) means for each discrete value
+            sigma_0: (B, 1, 1, 1) standard deviation at time 0
+        Returns:
+            logits: (B, C, H, W, V) logits for each discrete value
+        """
+        squared_dist = ((z_0.unsqueeze(-1) - mu_vals) ** 2) / (sigma_0.unsqueeze(-1) ** 2)
+        return -0.5 * squared_dist
 
 class VDM(nn.Module):
     def __init__(
@@ -155,85 +229,96 @@ class VDM(nn.Module):
         self.vocab_size = vocab_size
         self.device = device
         self.T = T
-        self.gamma_min = gamma_min
-        self.gamma_max = gamma_max
-
-        if learned_schedule:
-            self.gamma = LearnedSchedule(gamma_min, gamma_max)
-        else:
-            self.gamma = FixedLinearSchedule(gamma_min, gamma_max)
-
+        
+        schedule = LearnedSchedule if learned_schedule else LinearSchedule
+        self.gamma = schedule(gamma_min, gamma_max)
+        
         self.forward_diffusion = ForwardDiffusion(self.gamma)
-        self.reverse_diffusion = ReverseDiffusion(model, self.gamma)
+        self.reverse_diffusion = ReverseDiffusion(self.model, self.gamma)
+        
+        self.diffusion_loss = DiffusionLoss(self.gamma, gamma_min, gamma_max)
+        self.prior_loss = PriorLoss(self.gamma, device)
+        self.reconstruction_loss = ReconstructionLoss(self.forward_diffusion, vocab_size, device)
 
     def forward(self, batch):
-        # unpack (x, y) if needed
-        if isinstance(batch, (tuple, list)) and len(batch) == 2:
-            x, _ = batch
-        else:
-            x = batch
-
-        x = x.to(self.device)
-        B = x.shape[0]
-
-        # x in [0,1] -> discrete 0..vocab_size-1 -> continuous in [-1,1]
-        x_int = torch.round(x * (self.vocab_size - 1)).long()
-        x_cont = 2 * ((x_int + 0.5) / self.vocab_size) - 1  # in [-1,1]
-
-        # pick discrete step i in {1,..,T} and corresponding times
-        i = torch.randint(1, self.T + 1, (B,), device=self.device)
-        t = i.float() / self.T           # current time
-        s = (i - 1).float() / self.T     # previous time (not used in new loss)
-
-        # forward diffusion
-        z_t, gamma_t, eps = self.forward_diffusion.sample_z(x_cont, t)
+        """
+        Compute the total loss for a given batch.
+        First, it extracts the data from the batch, discretizes it,
+        converts it to continuous form, samples timesteps, get noise from
+        the forward diffusion, get the model's noise prediction, and computes
+        the diffusion, prior, and reconstruction losses.
+        then, it sums these losses to get the total loss.
+        Args:
+            batch: input batch, can be (data, labels) or just data
+        Returns:
+            total_loss: scalar tensor, total loss for the batch
+            stats: dict, individual loss components for logging
+        """
+        x = self.extract_data(batch).to(self.device)
+        batch_size = x.shape[0]
+        
+        x_int = self.discretize(x)
+        x_cont = self.to_continuous(x_int)
+        
+        t = self.sample_t(batch_size)
+        
+        z_t, gamma_t, eps = self.forward_diffusion(x_cont, t)
         eps_hat = self.model(z_t, gamma_t)
-
-        # -------- stable diffusion loss (discrete-time approx of continuous-time VDM) --------
-        # For linear gamma(t), dgamma/dt is constant:
-        dgamma_dt = (self.gamma_max - self.gamma_min)  # scalar
-        mse = ((eps - eps_hat) ** 2).mean(dim=(1, 2, 3))
-        diffusion_loss = 0.5 * dgamma_dt * mse  # shape (B,)
-
-        # -------- prior loss --------
-        gamma_1 = self.gamma(torch.ones(B, device=self.device))
-        snr_1 = get_snr(gamma_1)
-        prior_factor = (snr_1 / (snr_1 + 1)).view(B, 1, 1, 1)
-        prior_loss = (prior_factor * (x_cont ** 2)).mean(dim=(1, 2, 3))
-
-        # -------- discrete reconstruction term p(x|z_0) --------
-        t_0 = torch.zeros(B, device=self.device)
-        z_0, gamma_0, _ = self.forward_diffusion.sample_z(x_cont, t_0)
-
-        gamma_0_padded = gamma_0.view(B, 1, 1, 1)
-        alpha_0 = get_alpha(gamma_0_padded)
-        sigma_0 = get_sigma(gamma_0_padded)
-
-        x_vals = 2 * (
-            (torch.arange(self.vocab_size, device=self.device).float() + 0.5)
-            / self.vocab_size
-        ) - 1  # (V,)
-        mu_vals = alpha_0.unsqueeze(-1) * x_vals.view(1, 1, 1, 1, -1)
-
-        z_0_exp = z_0.unsqueeze(-1)
-        dist_sq = ((z_0_exp - mu_vals) ** 2) / (sigma_0.unsqueeze(-1) ** 2)
-        logits = -0.5 * dist_sq
-
-        log_probs = torch.log_softmax(logits, dim=-1)
-        x_int_exp = x_int.unsqueeze(-1)
-        reconstruction_loss = -log_probs.gather(-1, x_int_exp).squeeze(-1).mean(
-            dim=(1, 2, 3)
-        )
-
-        # -------- total loss --------
-        loss = diffusion_loss + prior_loss + reconstruction_loss  # (B,)
-        loss_mean = loss.mean()
-
+        
+        diffusion_loss = self.diffusion_loss(eps, eps_hat)
+        prior_loss = self.prior_loss(x_cont, batch_size)
+        reconstruction_loss = self.reconstruction_loss(x_int, x_cont, batch_size)
+        
+        total_loss = diffusion_loss + prior_loss + reconstruction_loss
+        
         stats = {
-            "loss": loss_mean.item(),
+            "loss": total_loss.mean().item(),
             "diffusion": diffusion_loss.mean().item(),
             "prior": prior_loss.mean().item(),
             "reconstruction": reconstruction_loss.mean().item(),
         }
+        
+        return total_loss.mean(), stats
 
-        return loss_mean, stats
+    def extract_data(self, batch):
+        """
+        Extract data from the batch, handling cases where batch is a tuple (data, labels).
+        Args:
+            batch: input batch, can be (data, labels) or just data
+        Returns:
+            data: extracted data tensor
+        """
+        if isinstance(batch, (tuple, list)) and len(batch) == 2:
+            return batch[0]
+        return batch
+
+    def discretize(self, x):
+        """
+        Discretize continuous data in [-1, 1] to integer values in {0, ..., vocab_size-1}.
+        Args:
+            x: (B, C, H, W) continuous input data in [-1, 1]
+        Returns:
+            x_int: (B, C, H, W) discrete input data as integers
+        """
+        return torch.round(x * (self.vocab_size - 1)).long()
+
+    def to_continuous(self, x_int):
+        """
+        Convert discrete integer data back to continuous data in [-1, 1].
+        Args:
+            x_int: (B, C, H, W) discrete input data as integers
+        Returns:
+            x: (B, C, H, W) continuous data in [-1, 1]
+        """
+        return 2 * ((x_int + 0.5) / self.vocab_size) - 1
+
+    def sample_t(self, batch_size):
+        """
+        Sample random timesteps t in [0, 1] for each sample in the batch.
+        Args:
+            batch_size: int, number of samples in the batch
+        Returns:
+            t: (B,) tensor of timesteps in [0, 1]
+        """
+        i = torch.randint(1, self.T + 1, (batch_size,), device=self.device)
+        return i.float() / self.T

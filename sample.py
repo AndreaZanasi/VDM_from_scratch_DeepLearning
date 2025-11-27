@@ -1,6 +1,6 @@
 import torch
 from UNet import UNet
-from VDM import VDM
+from vdm import VDM
 from DataProvider import DataProvider
 from Trainer import Trainer
 import matplotlib.pyplot as plt
