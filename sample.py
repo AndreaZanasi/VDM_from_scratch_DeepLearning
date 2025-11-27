@@ -2,7 +2,7 @@ import torch
 from unet import UNet
 from vdm import VDM
 from data_provider import DataProvider
-from Trainer import Trainer
+from trainer import Trainer
 import matplotlib.pyplot as plt
 import os
 from torchvision.utils import make_grid
