@@ -83,6 +83,8 @@ def train(vdm, unet):
     print(f"Best Loss: {trainer.best_loss:.4f} BPD")
     print(f"{'='*70}\n")
 
+    sample(vdm)
+
 def sample(vdm):
     print("Sampling...")
     checkpoint = torch.load(f'{CONFIG["save_dir"]}/best_model.pt')
