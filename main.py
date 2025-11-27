@@ -1,5 +1,5 @@
 import torch
-from UNet import UNet
+from unet import UNet
 from vdm import VDM
 from DataProvider import DataProvider
 from Trainer import Trainer
