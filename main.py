@@ -7,12 +7,18 @@ import matplotlib.pyplot as plt
 import os
 from torchvision.utils import make_grid
 import argparse
+import wandb
 
 CONFIG = {
+        'use_wandb': True,
+        'wandb_project': 'VDM-CIFAR10',
+        'wandb_run_name': 'vdm_experiment_1',
+        'wandb_entity': 'DL_group99',
+        'wandb_log_every': 100,
         'device': 'cuda' if torch.cuda.is_available() else 'cpu',
         'lr': 2e-4,
-        'batch_size': 64,
-        'epochs': 1000,
+        'batch_size': 16,
+        'epochs': 100,
         'save_dir': './checkpoints',
         'embedding_dim': 64,
         'n_blocks': 16,
@@ -29,8 +35,8 @@ CONFIG = {
         'num_samples': 64,
         'sample_path': './samples',
         'learned_schedule': True,
-        'best_model_path': 'learned_best_model2.pt',
-        'last_model_path': 'learned_last_model2.pt',
+        'best_model_path': 'learned_best_model.pt',
+        'last_model_path': 'learned_last_model.pt',
     }
 
 def init_models():
@@ -63,6 +69,22 @@ def train(vdm, unet):
     total_params = sum(p.numel() for p in unet.parameters())
     trainable_params = sum(p.numel() for p in unet.parameters() if p.requires_grad)
     data_provider = DataProvider(batch_size=CONFIG['batch_size'], num_workers=4)
+    
+    # Initialize WandB and log config
+    
+    if CONFIG.get("use_wandb", False):
+        wandb.init(
+            project=CONFIG.get("wandb_project", "vdm"),
+            entity=CONFIG.get("wandb_entity", None),
+            name=CONFIG.get("wandb_run_name", None),
+            config=CONFIG,
+        )
+
+        wandb.config.update({
+            "total_params": total_params,
+            "trainable_params": trainable_params
+        })
+    
     trainer = Trainer(vdm, data_provider, CONFIG)
 
     print(f"\n{'='*70}")
@@ -86,6 +108,23 @@ def train(vdm, unet):
     print(f"{'='*70}\n")
 
     sample(vdm)
+    
+    if CONFIG.get("use_wandb", False):
+        artifact = wandb.Artifact(
+        name="vdm-best-model",
+        type="model",
+        description="Best VDM checkpoint based on training loss"
+        )
+
+        best_model_path = os.path.join(
+            CONFIG["save_dir"], CONFIG["best_model_path"]
+        )
+        
+        if os.path.exists(best_model_path):
+            artifact.add_file(best_model_path)
+            wandb.log_artifact(artifact)
+        wandb.finish()
+
 
 def sample(vdm):
     print("Sampling...")
@@ -111,6 +150,16 @@ def sample(vdm):
     plt.tight_layout()
     plt.savefig(os.path.join(CONFIG['sample_path'], "generated_samples.png"), dpi=150, bbox_inches='tight')
     print(f"✓ Samples saved to {os.path.join(CONFIG['sample_path'], 'generated_samples.png')}")
+    
+    # Log samples to WandB
+    if CONFIG.get("use_wandb", False):
+        wandb.log({
+            "samples": wandb.Image(
+                os.path.join(CONFIG['sample_path'], "generated_samples.png"),
+                caption="VDM Generated Samples"
+            )
+        })
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

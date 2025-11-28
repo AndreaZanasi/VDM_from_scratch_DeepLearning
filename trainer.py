@@ -3,6 +3,7 @@ from torch.optim import AdamW
 import os
 from tqdm import tqdm
 import time
+import wandb
 
 class Trainer:
     def __init__(self, model, data_provider, config):
@@ -38,6 +39,10 @@ class Trainer:
         self.ema_loss = None
         self.ema_decay = 0.99
         
+        self.use_wandb = config.get("use_wandb", False)
+        # if self.use_wandb:
+        #     wandb.watch(self.model, log="gradients", log_freq=100)
+        
     def train(self, epochs):
         print(f"\n{'='*70}")
         print(f"Training Configuration:")
@@ -68,6 +73,19 @@ class Trainer:
             eta_seconds = avg_epoch_time * remaining_epochs
             eta_hours = int(eta_seconds // 3600)
             eta_mins = int((eta_seconds % 3600) // 60)
+            
+            # Log to wandb
+            
+            if self.use_wandb:
+                wandb.log({
+                    "epoch": epoch + 1,
+                    "train/epoch_loss": train_loss,
+                    "train/ema_epoch": self.ema_loss,
+                    "train/best_loss": self.best_loss,
+                    "train/lr_epoch": self.optimizer.param_groups[0]["lr"],
+                    "train/epoch_time_sec": epoch_time
+                })
+
             
             # Print epoch summary
             print(f"\n{'─'*70}")
@@ -123,6 +141,7 @@ class Trainer:
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
             
             self.optimizer.step()
+
             
             # Track metrics
             current_loss = loss.item()
@@ -135,6 +154,22 @@ class Trainer:
                 self.ema_loss = current_loss
             else:
                 self.ema_loss = self.ema_decay * self.ema_loss + (1 - self.ema_decay) * current_loss
+            
+            
+            # Log to wandb
+            if self.use_wandb and steps % self.config.get("wandb_log_every", 100) == 0:
+                log_data = {
+                    "train/step_loss": current_loss,
+                    "train/ema_loss": self.ema_loss,
+                    "train/lr": self.optimizer.param_groups[0]["lr"],
+                }
+
+                # Log any model-provided metrics
+                for k, v in metrics.items():
+                    if isinstance(v, (int, float)):
+                        log_data[f"train/{k}"] = v
+
+                wandb.log(log_data)
             
             # Update progress bar
             pbar.set_postfix({
@@ -174,6 +209,14 @@ class Trainer:
                 'train_losses': self.train_losses,
             }, best_path)
             print(f"  ✓ New best model! (improved by {improvement:.4f} BPD)")
+            
+            # Log to wandb
+            if self.use_wandb:
+                wandb.log({
+                    "best/loss": current_loss,
+                    "best/epoch": epoch
+                })
+
     
     def print_progress_summary(self, current_epoch, total_epochs):
         """Print a detailed summary every N epochs"""
@@ -182,6 +225,7 @@ class Trainer:
         
         recent_losses = self.train_losses[-10:]
         trend = "↓ improving" if recent_losses[-1] < recent_losses[0] else "→ plateau"
+        
         
         print(f"\n{'='*70}")
         print(f"Progress Summary (Epoch {current_epoch}/{total_epochs}):")
