@@ -12,25 +12,22 @@ CONFIG = {
         'device': 'cuda' if torch.cuda.is_available() else 'cpu',
         'lr': 2e-4,
         'batch_size': 64,
-        'epochs': 1000,
+        'epochs': 500,
         'save_dir': './checkpoints',
-        'embedding_dim': 64,
-        'n_blocks': 16,
-        'n_attention_heads': 8,
-        'dropout_prob': 0.1,
-        'norm_groups': 32,
+        'embedding_dim': 128,
+        'n_blocks': 8,
+        'n_attention_heads': 4,
+        'dropout_prob': 0.15,
+        'norm_groups': 16, #changed to 16 from 32 to have 128 / 16 = 8 channels per group   
         'input_channels': 3,
         'gamma_min': -13.3,
         'gamma_max': 5.0,
         'vocab_size': 256,
         'T': 1000,
         'use_fourier_features': True,
-        'attention_everywhere': True,
+        'attention_everywhere': False,
         'num_samples': 64,
-        'sample_path': './samples',
-        'learned_schedule': True,
-        'best_model_path': 'learned_best_model2.pt',
-        'last_model_path': 'learned_last_model2.pt',
+        'sample_path': './samples/generated_samples.png'
     }
 
 def init_models():
@@ -54,7 +51,7 @@ def init_models():
         vocab_size=CONFIG['vocab_size'],
         T=CONFIG['T'],
         device=CONFIG['device'],
-        learned_schedule=CONFIG['learned_schedule']
+        learned_schedule=True  
     ).to(CONFIG['device'])
 
     return vdm, unet
@@ -73,7 +70,7 @@ def train(vdm, unet):
     print(f"Trainable Parameters: {trainable_params:,}")
     print("\nStarting training...")
 
-    checkpoint_path = os.path.join(CONFIG['save_dir'], CONFIG['best_model_path'])
+    checkpoint_path = os.path.join(CONFIG['save_dir'], "best_model.pt")
     if os.path.exists(checkpoint_path):
         trainer.load_checkpoint(checkpoint_path)
 
@@ -89,7 +86,8 @@ def train(vdm, unet):
 
 def sample(vdm):
     print("Sampling...")
-    checkpoint = torch.load(f'{CONFIG["save_dir"]}/{CONFIG["best_model_path"]}')
+    checkpoint = torch.load(f'{CONFIG["save_dir"]}/best_model.pt', 
+        map_location=CONFIG['device'])
     vdm.load_state_dict(checkpoint['model_state_dict'])
     vdm.eval()
     
@@ -109,8 +107,8 @@ def sample(vdm):
     plt.axis('off')
     plt.title(f"Generated Samples")
     plt.tight_layout()
-    plt.savefig(os.path.join(CONFIG['sample_path'], "generated_samples.png"), dpi=150, bbox_inches='tight')
-    print(f"✓ Samples saved to {os.path.join(CONFIG['sample_path'], 'generated_samples.png')}")
+    plt.savefig(CONFIG['sample_path'], dpi=150, bbox_inches='tight')
+    print(f"✓ Samples saved to {CONFIG['sample_path']}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
