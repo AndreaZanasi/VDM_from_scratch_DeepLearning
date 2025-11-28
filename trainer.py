@@ -79,14 +79,15 @@ class Trainer:
             if self.use_wandb:
                 wandb.log({
                     "epoch": epoch + 1,
-                    "train/epoch_loss": train_loss,
-                    "train/ema_epoch": self.ema_loss,
-                    "train/best_loss": self.best_loss,
-                    "train/lr_epoch": self.optimizer.param_groups[0]["lr"],
-                    "train/epoch_time_sec": epoch_time
+                    "train/epoch/loss": train_loss,
+                    "train/epoch/reconstruciton_loss": train_metrics.get("reconstruction", 0),
+                    "train/epoch/diffusion_loss": train_metrics.get("diffusion", 0),
+                    "train/epoch/prios_loss": train_metrics.get("prior", 0),
+                    "train/epoch/ema_loss": self.ema_loss,
+                    "train/epoch/lr": self.optimizer.param_groups[0]["lr"],
+                    "train/epoch/time_sec": epoch_time
                 })
-
-            
+                            
             # Print epoch summary
             print(f"\n{'─'*70}")
             print(f"Epoch {epoch+1}/{epochs} Complete:")
@@ -159,15 +160,15 @@ class Trainer:
             # Log to wandb
             if self.use_wandb and steps % self.config.get("wandb_log_every", 100) == 0:
                 log_data = {
-                    "train/step_loss": current_loss,
-                    "train/ema_loss": self.ema_loss,
-                    "train/lr": self.optimizer.param_groups[0]["lr"],
+                    # "train/step/loss": current_loss,
+                    "train/step/ema_loss": self.ema_loss,
+                    "train/step/lr": self.optimizer.param_groups[0]["lr"],
                 }
 
                 # Log any model-provided metrics
                 for k, v in metrics.items():
                     if isinstance(v, (int, float)):
-                        log_data[f"train/{k}"] = v
+                        log_data[f"train/step/{k}"] = v
 
                 wandb.log(log_data)
             
