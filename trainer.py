@@ -78,7 +78,6 @@ class Trainer:
             
             if self.use_wandb:
                 wandb.log({
-                    "epoch": epoch + 1,
                     "train/epoch/loss": train_loss,
                     "train/epoch/reconstruciton_loss": train_metrics.get("reconstruction", 0),
                     "train/epoch/diffusion_loss": train_metrics.get("diffusion", 0),
@@ -86,7 +85,7 @@ class Trainer:
                     "train/epoch/ema_loss": self.ema_loss,
                     "train/epoch/lr": self.optimizer.param_groups[0]["lr"],
                     "train/epoch/time_sec": epoch_time
-                })
+                }, step=epoch+1)
                             
             # Print epoch summary
             print(f"\n{'─'*70}")
