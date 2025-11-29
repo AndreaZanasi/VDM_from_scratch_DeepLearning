@@ -169,7 +169,7 @@ class Trainer:
                     if isinstance(v, (int, float)):
                         log_data[f"train/step/{k}"] = v
 
-                wandb.log(log_data)
+                wandb.log(log_data, step=steps)
             
             # Update progress bar
             pbar.set_postfix({
@@ -215,7 +215,7 @@ class Trainer:
                 wandb.log({
                     "best/loss": current_loss,
                     "best/epoch": epoch
-                })
+                }, step=epoch)
 
     
     def print_progress_summary(self, current_epoch, total_epochs):
