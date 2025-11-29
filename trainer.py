@@ -4,6 +4,9 @@ import os
 from tqdm import tqdm
 import time
 import wandb
+import matplotlib.pyplot as plt
+import numpy as np
+from torchvision.utils import make_grid
 
 class Trainer:
     def __init__(self, model, data_provider, config):
@@ -14,7 +17,7 @@ class Trainer:
         
         self.model.to(self.device)
         
-        # Use AdamW with paper's settings
+        # Use AdamW
         self.optimizer = AdamW(
             self.model.parameters(), 
             lr=config.get('lr', 2e-4),
@@ -34,96 +37,46 @@ class Trainer:
         
         self.best_loss = float('inf')
         self.train_losses = []
-        
-        # For tracking progress
         self.ema_loss = None
         self.ema_decay = 0.99
-        
-        self.use_wandb = config.get("use_wandb", False)
-        # if self.use_wandb:
-        #     wandb.watch(self.model, log="gradients", log_freq=100)
-        
+
     def train(self, epochs):
         print(f"\n{'='*70}")
-        print(f"Training Configuration:")
-        print(f"  Epochs: {epochs}")
-        print(f"  Batch Size: {self.config.get('batch_size', 64)}")
-        print(f"  Learning Rate: {self.config.get('lr', 2e-4):.2e}")
-        print(f"  Device: {self.device}")
-        print(f"  Target: ~2.67 BPD (paper baseline for T=1000)")
+        print(f"VDM Training Started")
         print(f"{'='*70}\n")
         
-        start_time = time.time()
-        
         for epoch in range(epochs):
-            epoch_start = time.time()
-            
-            # Training
-            train_loss, train_metrics = self.train_epoch(epoch + 1, epochs)
+            # 1. Train
+            train_loss = self.train_epoch(epoch + 1, epochs)
             self.train_losses.append(train_loss)
             
-            # Step scheduler
+            # 2. Validate (New)
+            if (epoch + 1) % self.config.get('validate_every', 1) == 0:
+                val_loss = self.validate(epoch + 1)
+            
+            # 3. Scheduler Step
             self.scheduler.step()
             
-            # Compute statistics
-            epoch_time = time.time() - epoch_start
-            elapsed_time = time.time() - start_time
-            avg_epoch_time = elapsed_time / (epoch + 1)
-            remaining_epochs = epochs - (epoch + 1)
-            eta_seconds = avg_epoch_time * remaining_epochs
-            eta_hours = int(eta_seconds // 3600)
-            eta_mins = int((eta_seconds % 3600) // 60)
-            
-            # Log to wandb
-            
-            if self.use_wandb:
-                wandb.log({
-                    "epoch": epoch + 1,
-                    "train/epoch/loss": train_loss,
-                    "train/epoch/reconstruciton_loss": train_metrics.get("reconstruction", 0),
-                    "train/epoch/diffusion_loss": train_metrics.get("diffusion", 0),
-                    "train/epoch/prios_loss": train_metrics.get("prior", 0),
-                    "train/epoch/ema_loss": self.ema_loss,
-                    "train/epoch/lr": self.optimizer.param_groups[0]["lr"],
-                    "train/epoch/time_sec": epoch_time
-                })
-                            
-            # Print epoch summary
-            print(f"\n{'─'*70}")
-            print(f"Epoch {epoch+1}/{epochs} Complete:")
-            print(f"  Train Loss:    {train_loss:.4f} BPD")
-            print(f"  EMA Loss:      {self.ema_loss:.4f} BPD")
-            print(f"  Best Loss:     {self.best_loss:.4f} BPD")
-            print(f"  Learning Rate: {self.optimizer.param_groups[0]['lr']:.2e}")
-            print(f"  Time: {epoch_time:.1f}s | ETA: {eta_hours}h {eta_mins}m")
-            print(f"{'─'*70}\n")
-
-            
-            # Save checkpoints
+            # 4. Save Checkpoints
             self.handle_checkpoints(train_loss, epoch + 1)
             
-            # Periodic detailed status
-            if (epoch + 1) % 10 == 0:
-                self.print_progress_summary(epoch + 1, epochs)
-    
+            # 5. Visualizations (Samples & Schedule)
+            if self.config.get('use_wandb', False):
+                self.log_visualizations(epoch + 1)
+
+            # Print Summary
+            print(f"Epoch {epoch+1}: Train {train_loss:.4f} | Best {self.best_loss:.4f}")
+
     def train_epoch(self, epoch, total_epochs):
         self.model.train()
-        
-        pbar = tqdm(
-            self.data_provider.train, 
-            desc=f"Epoch {epoch}/{total_epochs}",
-            ncols=100,
-            bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]'
-        )
+        pbar = tqdm(self.data_provider.train, desc=f"Train Ep {epoch}/{total_epochs}", ncols=100)
         
         total_loss = 0
         steps = 0
-        last_metrics = {}
         
         for batch in pbar:
             self.optimizer.zero_grad()
             
-            # Handle batch format
             if isinstance(batch, (list, tuple)):
                 x, _ = batch
             else:
@@ -137,110 +90,157 @@ class Trainer:
             
             # Backward pass
             loss.backward()
-            
-            # Gradient clipping for stability
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
-            
             self.optimizer.step()
-
             
-            # Track metrics
+            # Metrics
             current_loss = loss.item()
             total_loss += current_loss
             steps += 1
-            last_metrics = metrics
             
-            # Update EMA
             if self.ema_loss is None:
                 self.ema_loss = current_loss
             else:
                 self.ema_loss = self.ema_decay * self.ema_loss + (1 - self.ema_decay) * current_loss
             
-            
-            # Log to wandb
-            if self.use_wandb and steps % self.config.get("wandb_log_every", 100) == 0:
-                log_data = {
-                    # "train/step/loss": current_loss,
-                    "train/step/ema_loss": self.ema_loss,
-                    "train/step/lr": self.optimizer.param_groups[0]["lr"],
-                }
+            # --- WANDB LOGGING (Per Step) ---
+            if self.config.get('use_wandb', False) and steps % self.config.get('wandb_log_freq', 50) == 0:
+                wandb.log({
+                    "train/total_loss": current_loss,
+                    "train/diffusion_loss": metrics.get("diffusion", 0),
+                    "train/prior_loss": metrics.get("prior", 0),
+                    "train/recon_loss": metrics.get("reconstruction", 0),
+                    "train/lr": self.optimizer.param_groups[0]['lr'],
+                    "epoch": epoch
+                })
 
-                # Log any model-provided metrics
-                for k, v in metrics.items():
-                    if isinstance(v, (int, float)):
-                        log_data[f"train/step/{k}"] = v
-
-                wandb.log(log_data)
-            
-            # Update progress bar
-            pbar.set_postfix({
-                'loss': f'{current_loss:.3f}',
-                'ema': f'{self.ema_loss:.3f}',
-                'lr': f'{self.optimizer.param_groups[0]["lr"]:.1e}'
-            })
+            pbar.set_postfix({'loss': f'{current_loss:.3f}', 'ema': f'{self.ema_loss:.3f}'})
         
-        avg_loss = total_loss / steps if steps > 0 else 0
-        return avg_loss, last_metrics
-    
+        return total_loss / steps if steps > 0 else 0
+
+    def validate(self, epoch):
+        """Run validation on test set"""
+        self.model.eval()
+        total_val_loss = 0
+        steps = 0
+        
+        # Only run a subset to save time if dataset is huge
+        limit_batches = 50 
+        
+        with torch.no_grad():
+            for i, batch in enumerate(self.data_provider.test):
+                if i >= limit_batches: break
+                
+                if isinstance(batch, (list, tuple)):
+                    x, _ = batch
+                else:
+                    x = batch
+                x = x.to(self.device)
+                x = (x + 1) / 2
+                
+                loss, metrics = self.model(x)
+                total_val_loss += loss.item()
+                steps += 1
+        
+        avg_val_loss = total_val_loss / steps if steps > 0 else 0
+        
+        if self.config.get('use_wandb', False):
+            wandb.log({
+                "val/total_loss": avg_val_loss,
+                "epoch": epoch
+            })
+            
+        return avg_val_loss
+
+    def log_visualizations(self, epoch):
+        """Handle Sampling and Schedule Plotting"""
+        
+        # 1. Periodic Image Sampling
+        if epoch % self.config.get('sample_every_epochs', 5) == 0:
+            self.model.eval()
+            with torch.no_grad():
+                # Generate Samples
+                samples = self.model.reverse_diffusion.sample(
+                    batch_size=16, # Small batch for visualization
+                    shape=(3, 32, 32),
+                    T=self.config.get('T', 1000),
+                    device=self.device
+                )
+                
+                # Create grid
+                grid = make_grid(samples, nrow=4, normalize=False)
+                
+                # Log to WandB
+                wandb.log({
+                    "generated_samples": wandb.Image(grid, caption=f"Epoch {epoch}"),
+                    "epoch": epoch
+                })
+        
+        # 2. Variance Schedule Visualization
+        if epoch % self.config.get('plot_schedule_every', 10) == 0:
+            self.plot_variance_schedule(epoch)
+
+    def plot_variance_schedule(self, epoch):
+        """Plots gamma(t) and SNR(t) to visualize the learned schedule"""
+        t = torch.linspace(0, 1, 1000, device=self.device)
+        with torch.no_grad():
+            gamma = self.model.gamma(t)
+            snr = torch.exp(-gamma)
+        
+        t_cpu = t.cpu().numpy()
+        gamma_cpu = gamma.cpu().numpy()
+        snr_cpu = snr.cpu().numpy()
+        
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 4))
+        
+        # Plot Gamma
+        ax1.plot(t_cpu, gamma_cpu)
+        ax1.set_title("Learned Gamma(t)")
+        ax1.set_xlabel("t")
+        ax1.set_ylabel("gamma")
+        ax1.grid(True)
+        
+        # Plot SNR
+        ax2.plot(t_cpu, snr_cpu)
+        ax2.set_title("Signal-to-Noise Ratio (SNR)")
+        ax2.set_xlabel("t")
+        ax2.set_ylabel("SNR")
+        ax2.set_yscale('log')
+        ax2.grid(True)
+        
+        wandb.log({
+            "variance_schedule": wandb.Image(fig),
+            "epoch": epoch
+        })
+        plt.close(fig)
+
     def handle_checkpoints(self, current_loss, epoch):
-        # Always save last model
+        # Save last
         last_path = os.path.join(self.save_dir, self.config.get('last_model_path', 'last_model.pt'))
+        self._save(last_path, current_loss, epoch)
+        
+        # Save best
+        if current_loss < self.best_loss:
+            self.best_loss = current_loss
+            best_path = os.path.join(self.save_dir, self.config.get('best_model_path', 'best_model.pt'))
+            self._save(best_path, current_loss, epoch)
+            
+            # Log best metric to wandb
+            if self.config.get('use_wandb', False):
+                wandb.run.summary["best_loss"] = self.best_loss
+
+    def _save(self, path, loss, epoch):
         torch.save({
             'epoch': epoch,
             'model_state_dict': self.model.state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict(),
             'scheduler_state_dict': self.scheduler.state_dict(),
-            'loss': current_loss,
+            'loss': loss,
             'ema_loss': self.ema_loss,
             'train_losses': self.train_losses,
-        }, last_path)
-        
-        # Save best model
-        if current_loss < self.best_loss:
-            improvement = self.best_loss - current_loss
-            self.best_loss = current_loss
-            best_path = os.path.join(self.save_dir, self.config.get('best_model_path', 'best_model.pt'))
-            torch.save({
-                'epoch': epoch,
-                'model_state_dict': self.model.state_dict(),
-                'optimizer_state_dict': self.optimizer.state_dict(),
-                'scheduler_state_dict': self.scheduler.state_dict(),
-                'loss': current_loss,
-                'ema_loss': self.ema_loss,
-                'train_losses': self.train_losses,
-            }, best_path)
-            print(f"  ✓ New best model! (improved by {improvement:.4f} BPD)")
-            
-            # Log to wandb
-            if self.use_wandb:
-                wandb.log({
-                    "best/loss": current_loss,
-                    "best/epoch": epoch
-                })
+        }, path)
 
-    
-    def print_progress_summary(self, current_epoch, total_epochs):
-        """Print a detailed summary every N epochs"""
-        if len(self.train_losses) < 10:
-            return
-        
-        recent_losses = self.train_losses[-10:]
-        trend = "↓ improving" if recent_losses[-1] < recent_losses[0] else "→ plateau"
-        
-        
-        print(f"\n{'='*70}")
-        print(f"Progress Summary (Epoch {current_epoch}/{total_epochs}):")
-        print(f"  Current Loss:  {self.train_losses[-1]:.4f} BPD")
-        print(f"  Best Loss:     {self.best_loss:.4f} BPD")
-        print(f"  Initial Loss:  {self.train_losses[0]:.4f} BPD")
-        print(f"  Improvement:   {self.train_losses[0] - self.train_losses[-1]:.4f} BPD")
-        print(f"  Recent Trend:  {trend}")
-        print(f"  Target (Paper): 2.67 BPD")
-        print(f"  Gap to Target: {self.train_losses[-1] - 2.67:+.4f} BPD")
-        print(f"{'='*70}\n")
-    
     def load_checkpoint(self, path):
-        """Load a checkpoint to resume training"""
         checkpoint = torch.load(path, map_location=self.device)
         self.model.load_state_dict(checkpoint['model_state_dict'])
         self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
@@ -248,6 +248,5 @@ class Trainer:
         self.train_losses = checkpoint['train_losses']
         self.ema_loss = checkpoint.get('ema_loss', None)
         self.best_loss = checkpoint['loss']
-        print(f"Checkpoint loaded from {path}")
-        print(f"Resuming from epoch {checkpoint['epoch']} with loss {checkpoint['loss']:.4f} BPD")
+        print(f"Resuming from epoch {checkpoint['epoch']} with loss {checkpoint['loss']:.4f}")
         return checkpoint['epoch']
