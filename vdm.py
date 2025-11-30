@@ -108,6 +108,30 @@ class ReverseDiffusion(nn.Module):
             z_s = mean
         
         return z_s
+    
+    @torch.no_grad()
+    def sample_from_noisy(self, z_t, t_start, T, device='cuda'):
+        """
+        Reverse diffusion starting from a given noisy z_t down to t=0
+        Args:
+            z_t: noisy image at t_start
+            t_start: fraction of total T where z_t is located (0-1)
+            T: number of denoising steps from t_start to t=0
+            device: device
+        Returns:
+            z_0: reconstructed image
+        """
+        batch_size = z_t.shape[0]
+        timesteps = torch.linspace(t_start, 0.0, T + 1, device=device)
+
+        z = z_t.clone()
+        for i in range(T):
+            t = timesteps[i].expand(batch_size)
+            s = timesteps[i + 1].expand(batch_size)
+            is_last_step = (i == T - 1)
+            z = self.denoise_step(z, t, s, is_last_step)
+        return z
+
 
 class DiffusionLoss(nn.Module):
     def __init__(self, gamma, gamma_min, gamma_max):

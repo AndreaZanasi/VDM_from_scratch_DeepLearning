@@ -357,7 +357,7 @@ class UNet(nn.Module):
         )
 
         if use_fourier_features:
-            self.fourier_features = FourierFeatures(first=7.0, last=8.0, step=1.0)
+            self.fourier_features = FourierFeatures(first=2.0, last=5.0, step=1.0)
 
         self.embed_conditioning = nn.Sequential(
             nn.Linear(embedding_dim, embedding_dim * 4),

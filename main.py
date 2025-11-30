@@ -12,32 +12,39 @@ import wandb
 CONFIG = {
         'use_wandb': True,
         'wandb_project': 'VDM-CIFAR10',
-        'wandb_run_name': 'vdm_experiment_2',
+        'wandb_run_name': 'vdm_experiment_5',
         'wandb_entity': 'DL_group99',
         'wandb_log_every': 100,
+        'wandb_log_freq': 50,       # Log loss every 50 steps
+        'sample_every_epochs': 5,   # Generate images every 5 epochs
+        'plot_schedule_every': 10,  # Plot variance schedule every 10 epochs
+        'validate_every': 1,        # Run validation every epoch
+        
         'device': 'cuda' if torch.cuda.is_available() else 'cpu',
-        'lr': 2e-4,
-        'batch_size': 32,
-        'epochs': 100,
+        'lr': 1e-4,
+        'batch_size': 64,
+        'epochs': 400,
         'save_dir': './checkpoints',
-        'embedding_dim': 64,
-        'n_blocks': 8,
-        'n_attention_heads': 8,
+        
+        'embedding_dim': 128,
+        'n_blocks': 12,
+        'n_attention_heads': 4,
         'dropout_prob': 0.1,
-        'norm_groups': 32,
+        'norm_groups': 16,
         'input_channels': 3,
+        
         'gamma_min': -13.3,
         'gamma_max': 5.0,
         'vocab_size': 256,
         'T': 1000,
         'use_fourier_features': True,
-        'attention_everywhere': True,
+        'attention_everywhere': False,
         'num_samples': 64,
         'sample_path': './samples',
         'learned_schedule': True,
         'best_model_path': 'learned_best_model.pt',
         'last_model_path': 'learned_last_model.pt',
-    }
+        }
 
 def init_models():
     unet = UNet(
@@ -110,19 +117,6 @@ def train(vdm, unet):
     sample(vdm)
     
     if CONFIG.get("use_wandb", False):
-        artifact = wandb.Artifact(
-        name="vdm-best-model",
-        type="model",
-        description="Best VDM checkpoint based on training loss"
-        )
-
-        best_model_path = os.path.join(
-            CONFIG["save_dir"], CONFIG["best_model_path"]
-        )
-        
-        if os.path.exists(best_model_path):
-            artifact.add_file(best_model_path)
-            wandb.log_artifact(artifact)
         wandb.finish()
 
 
