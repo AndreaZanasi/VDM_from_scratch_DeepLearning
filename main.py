@@ -12,7 +12,7 @@ import wandb
 CONFIG = {
         'use_wandb': True,
         'wandb_project': 'VDM-CIFAR10',
-        'wandb_run_name': 'vdm_experiment_5',
+        'wandb_run_name': 'vdm_experiment_6',
         'wandb_entity': 'DL_group99',
         'wandb_log_every': 100,
         'wandb_log_freq': 50,       # Log loss every 50 steps
@@ -23,13 +23,13 @@ CONFIG = {
         'device': 'cuda' if torch.cuda.is_available() else 'cpu',
         'lr': 1e-4,
         'batch_size': 64,
-        'epochs': 400,
+        'epochs': 200,
         'save_dir': './checkpoints',
         
-        'embedding_dim': 128,
+        'embedding_dim': 192,
         'n_blocks': 12,
         'n_attention_heads': 4,
-        'dropout_prob': 0.1,
+        'dropout_prob': 0.0,
         'norm_groups': 16,
         'input_channels': 3,
         
@@ -80,11 +80,13 @@ def train(vdm, unet):
     # Initialize WandB and log config
     
     if CONFIG.get("use_wandb", False):
+        important_keys = ['lr', 'batch_size', 'epochs', 'embedding_dim', 'n_blocks', 'n_attention_heads', 'dropout_prob', 'norm_groups', 'gamma_min', 'gamma_max', 'T', 'learned_schedule', 'attention_everywhere']
+        wandb_config = {key: CONFIG[key] for key in important_keys}
         wandb.init(
             project=CONFIG.get("wandb_project", "vdm"),
             entity=CONFIG.get("wandb_entity", None),
             name=CONFIG.get("wandb_run_name", None),
-            config=CONFIG,
+            config=wandb_config,
         )
 
         wandb.config.update({

@@ -39,7 +39,7 @@ class Trainer:
         self.best_loss = float('inf')
         self.train_losses = []
         self.ema_loss = None
-        self.ema_decay = 0.99
+        self.ema_decay = 0.9999
 
     def train(self, epochs):
         print(f"\n{'='*70}")
@@ -114,6 +114,10 @@ class Trainer:
             
             if (epoch + 1) % self.config.get('sample_every_epochs', 5) == 0:
                 self.log_reconstructed_samples(epoch + 1)
+            
+            if (epoch + 1) % self.config.get('sample_every_epochs', 5) == 0:
+                self.log_denoising_trajectory(epoch + 1, num_samples=4, n_steps=8)
+
 
     def train_epoch(self, epoch, total_epochs):
         self.model.train()
@@ -334,7 +338,7 @@ class Trainer:
         print(f"Resuming from epoch {checkpoint['epoch']} with loss {checkpoint['loss']:.4f}")
         return checkpoint['epoch']
     
-    def log_reconstructed_samples(self, epoch, num_samples=8, t_fraction=0.7):
+    def log_reconstructed_samples(self, epoch, num_samples=8, t_fraction=0.6):
         """
         Log original, noised, and reconstructed samples from the validation set to WandB.
 
@@ -387,5 +391,62 @@ class Trainer:
             # 4. Log to WandB
             wandb.log({
                 "reconstructed_samples": wandb.Image(grid, caption=f"Epoch {epoch}"),
+                "epoch": epoch
+            })
+
+    def log_denoising_trajectory(self, epoch, num_samples=4, n_steps=8):
+        """
+        Logs a grid showing the denoising trajectory of images.
+        Each row is one image; columns show progressive reverse diffusion steps.
+
+        Args:
+            epoch (int): current epoch
+            num_samples (int): number of images to show
+            n_steps (int): number of intermediate steps in trajectory
+        """
+        self.model.eval()
+        val_iter = iter(self.data_provider.test)
+        batch = next(val_iter)
+        if isinstance(batch, (list, tuple)):
+            x, _ = batch
+        else:
+            x = batch
+
+        x = x[:num_samples].to(self.device)
+        batch_size = x.shape[0]
+
+        x_vis = (x + 1) / 2  # normalize to [0,1]
+
+        with torch.no_grad():
+            # Add full noise (t=1)
+            t_start = torch.ones(batch_size, device=self.device)
+            z_t, _, _ = self.model.forward_diffusion(x, t_start)
+
+            # Generate timesteps for trajectory
+            timesteps = torch.linspace(1.0, 0.0, n_steps, device=self.device)
+
+            # Store images at each step
+            trajectory = []
+
+            z = z_t.clone()
+            for i in range(n_steps):
+                t = timesteps[i].expand(batch_size)
+                s = timesteps[i + 1].expand(batch_size) if i < n_steps - 1 else torch.zeros_like(t)
+                is_last = (i == n_steps - 1)
+                z = self.model.reverse_diffusion.denoise_step(z, t, s, is_last)
+                trajectory.append(torch.clamp((z + 1) / 2, 0, 1))  # normalize
+
+            # Build a grid: rows = images, cols = timesteps
+            grid_rows = []
+            for b in range(batch_size):
+                row = torch.stack([trajectory[s][b] for s in range(n_steps)], dim=0)
+                row_grid = make_grid(row, nrow=n_steps, padding=2, normalize=False)
+                grid_rows.append(row_grid)
+
+            grid = torch.cat(grid_rows, dim=1)  # vertically stack rows
+
+            # Log to WandB
+            wandb.log({
+                "denoising_trajectory": wandb.Image(grid, caption=f"Epoch {epoch}"),
                 "epoch": epoch
             })
