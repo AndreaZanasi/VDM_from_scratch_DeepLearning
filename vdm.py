@@ -357,11 +357,8 @@ class VDM(nn.Module):
 
     def sample_t(self, batch_size):
         """
-        Sample random timesteps t in [0, 1] for each sample in the batch.
-        Args:
-            batch_size: int, number of samples in the batch
-        Returns:
-            t: (B,) tensor of timesteps in [0, 1]
+        Sample timesteps t in [0, 1] using low-discrepancy sampler.
         """
-        i = torch.randint(1, self.T + 1, (batch_size,), device=self.device)
-        return i.float() / self.T
+        u0 = torch.rand(1, device=self.device)  # single random offset
+        t = (u0 + torch.arange(batch_size, device=self.device).float() / batch_size) % 1.0
+        return t

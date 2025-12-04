@@ -20,7 +20,7 @@ class Trainer:
         
         # Use AdamW
         self.optimizer = AdamW(
-            self.model.parameters(), 
+            self.model.parameters(),
             lr=config.get('lr', 2e-4),
             betas=(0.9, 0.99),
             weight_decay=0.01
@@ -195,6 +195,9 @@ class Trainer:
         """Run validation on test set"""
         self.model.eval()
         total_val_loss = 0
+        total_diffusion_loss = 0
+        total_prior_loss = 0
+        total_recon_loss = 0
         steps = 0
         
         # Only run a subset to save time if dataset is huge
@@ -213,16 +216,22 @@ class Trainer:
                 
                 loss, metrics = self.model(x)
                 total_val_loss += loss.item()
+                total_diffusion_loss += metrics.get("diffusion", 0)
+                total_prior_loss += metrics.get("prior", 0)
+                total_recon_loss += metrics.get("reconstruction", 0)
                 steps += 1
         
         avg_val_loss = total_val_loss / steps if steps > 0 else 0
+        avg_diffusion_loss = total_diffusion_loss / steps if steps > 0 else 0
+        avg_prior_loss = total_prior_loss / steps if steps > 0 else 0
+        avg_recon_loss = total_recon_loss / steps if steps > 0 else 0
         
         if self.config.get('use_wandb', False):
             wandb.log({
                 "val/total_loss": avg_val_loss,
-                "val/diffusion_loss": metrics.get("diffusion", 0),
-                "val/prior_loss": metrics.get("prior", 0),
-                "val/reconstruction_loss": metrics.get("reconstruction", 0),
+                "val/diffusion_loss": avg_diffusion_loss,
+                "val/prior_loss": avg_prior_loss,
+                "val/reconstruction_loss": avg_recon_loss,
                 "epoch": epoch
             })
             
