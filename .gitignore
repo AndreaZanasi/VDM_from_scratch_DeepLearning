@@ -2,3 +2,7 @@ data/
 __pycache__/
 checkpoints/
 samples/
+wandb/
+*.err
+*.out
+*.lsf

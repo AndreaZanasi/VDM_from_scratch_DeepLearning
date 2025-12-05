@@ -3,6 +3,7 @@ from torch import nn, sigmoid, sqrt, exp, log_softmax
 from torch.special import expm1
 from tqdm import tqdm
 from noise_scheduler import LinearSchedule, LearnedSchedule
+import numpy as np
 
 def get_alpha(gamma):
     return sqrt(sigmoid(-gamma))
@@ -108,15 +109,38 @@ class ReverseDiffusion(nn.Module):
             z_s = mean
         
         return z_s
+    
+    @torch.no_grad()
+    def sample_from_noisy(self, z_t, t_start, T, device='cuda'):
+        """
+        Reverse diffusion starting from a given noisy z_t down to t=0
+        Args:
+            z_t: noisy image at t_start
+            t_start: fraction of total T where z_t is located (0-1)
+            T: number of denoising steps from t_start to t=0
+            device: device
+        Returns:
+            z_0: reconstructed image
+        """
+        batch_size = z_t.shape[0]
+        timesteps = torch.linspace(t_start, 0.0, T + 1, device=device)
+
+        z = z_t.clone()
+        for i in range(T):
+            t = timesteps[i].expand(batch_size)
+            s = timesteps[i + 1].expand(batch_size)
+            is_last_step = (i == T - 1)
+            z = self.denoise_step(z, t, s, is_last_step)
+        return z
+
 
 class DiffusionLoss(nn.Module):
-    def __init__(self, gamma, gamma_min, gamma_max):
+    def __init__(self, gamma, T):
         super().__init__()
         self.gamma = gamma
-        self.gamma_min = gamma_min
-        self.gamma_max = gamma_max
+        self.T = T
 
-    def forward(self, eps, eps_hat):
+    def forward(self, eps, eps_hat, t):
         """
         Compute the diffusion loss between true noise and predicted noise.
         It measures how well the model predicts the noise added during the forward diffusion process.
@@ -126,9 +150,18 @@ class DiffusionLoss(nn.Module):
         Returns:
             loss: (B,) diffusion loss for each sample in the batch
         """
-        dgamma_dt = self.gamma_max - self.gamma_min
-        mse = ((eps - eps_hat) ** 2).mean(dim=(1, 2, 3))
-        return 0.5 * dgamma_dt * mse
+        s = t - (1.0 / self.T)
+        s = torch.clamp(s, min=0.0)
+
+        gamma_t = self.gamma(t).view(-1, 1, 1, 1)
+        gamma_s = self.gamma(s).view(-1, 1, 1, 1)
+        
+        weight = expm1(gamma_t - gamma_s) 
+        
+        mse = (eps - eps_hat) ** 2
+        loss = 0.5 * self.T * weight * mse
+        
+        return loss.sum(dim=(1, 2, 3))
 
 class PriorLoss(nn.Module):
     def __init__(self, gamma, device):
@@ -146,10 +179,18 @@ class PriorLoss(nn.Module):
             loss: (B,) prior loss for each sample in the batch
         """
         gamma_1 = self.gamma(torch.ones(batch_size, device=self.device))
-        snr_1 = get_snr(gamma_1)
+        gamma_1 = gamma_1.view(batch_size, 1, 1, 1)
+        sigma2_1 = sigmoid(gamma_1)
+        alpha2_1 = sigmoid(-gamma_1)
         
-        prior_factor = (snr_1 / (snr_1 + 1)).view(batch_size, 1, 1, 1)
-        return (prior_factor * (x ** 2)).mean(dim=(1, 2, 3))
+        
+        mean_sq = alpha2_1 * (x ** 2)
+        
+        log_sigma2_1 = -torch.nn.functional.softplus(-gamma_1)
+        
+        kl = 0.5 * (-log_sigma2_1 + sigma2_1 + mean_sq - 1)
+        
+        return kl.sum(dim=(1, 2, 3))
 
 class ReconstructionLoss(nn.Module):
     def __init__(self, forward_diffusion, vocab_size, device):
@@ -185,7 +226,7 @@ class ReconstructionLoss(nn.Module):
         x_int_padded = x_int.unsqueeze(-1)
         nll = -log_probs.gather(-1, x_int_padded).squeeze(-1)
         
-        return nll.mean(dim=(1, 2, 3))
+        return nll.sum(dim=(1, 2, 3))
 
     def get_discrete_values(self):
         """
@@ -236,7 +277,7 @@ class VDM(nn.Module):
         self.forward_diffusion = ForwardDiffusion(self.gamma)
         self.reverse_diffusion = ReverseDiffusion(self.model, self.gamma)
         
-        self.diffusion_loss = DiffusionLoss(self.gamma, gamma_min, gamma_max)
+        self.diffusion_loss = DiffusionLoss(self.gamma, T)
         self.prior_loss = PriorLoss(self.gamma, device)
         self.reconstruction_loss = ReconstructionLoss(self.forward_diffusion, vocab_size, device)
 
@@ -264,10 +305,12 @@ class VDM(nn.Module):
         
         z_t, gamma_t, eps = self.forward_diffusion(x_cont, t)
         eps_hat = self.model(z_t, gamma_t)
+
+        bpd_factor = 1 / (np.prod(x.shape[1:]) * np.log(2))
         
-        diffusion_loss = self.diffusion_loss(eps, eps_hat)
-        prior_loss = self.prior_loss(x_cont, batch_size)
-        reconstruction_loss = self.reconstruction_loss(x_int, x_cont, batch_size)
+        diffusion_loss = self.diffusion_loss(eps, eps_hat, t) * bpd_factor
+        prior_loss = self.prior_loss(x_cont, batch_size) * bpd_factor
+        reconstruction_loss = self.reconstruction_loss(x_int, x_cont, batch_size) * bpd_factor
         
         total_loss = diffusion_loss + prior_loss + reconstruction_loss
         
@@ -314,11 +357,8 @@ class VDM(nn.Module):
 
     def sample_t(self, batch_size):
         """
-        Sample random timesteps t in [0, 1] for each sample in the batch.
-        Args:
-            batch_size: int, number of samples in the batch
-        Returns:
-            t: (B,) tensor of timesteps in [0, 1]
+        Sample timesteps t in [0, 1] using low-discrepancy sampler.
         """
-        i = torch.randint(1, self.T + 1, (batch_size,), device=self.device)
-        return i.float() / self.T
+        u0 = torch.rand(1, device=self.device)  # single random offset
+        t = (u0 + torch.arange(batch_size, device=self.device).float() / batch_size) % 1.0
+        return t

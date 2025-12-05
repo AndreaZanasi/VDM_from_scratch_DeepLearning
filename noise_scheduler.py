@@ -46,7 +46,7 @@ class LearnedSchedule(NoiseSchedule):
         return gamma.squeeze(-1)
 
     def _forward_tilde(self, t):
-        w1 = self.layer1.weight.clamp(min=0)
+        w1 = self.layer1.weight.clamp(min=0, max=0.5)
         w2 = self.layer2.weight.clamp(min=0)
         w3 = self.layer3.weight.clamp(min=0)
         b1 = self.layer1.bias

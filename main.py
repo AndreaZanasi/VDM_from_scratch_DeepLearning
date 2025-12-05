@@ -7,31 +7,44 @@ import matplotlib.pyplot as plt
 import os
 from torchvision.utils import make_grid
 import argparse
+import wandb
 
 CONFIG = {
+        'use_wandb': True,
+        'wandb_project': 'VDM-CIFAR10',
+        'wandb_run_name': 'vdm_experiment_learned_fix',
+        'wandb_entity': 'DL_group99',
+        'wandb_log_every': 100,
+        'wandb_log_freq': 50,       # Log loss every 50 steps
+        'sample_every_epochs': 5,   # Generate images every 5 epochs
+        'plot_schedule_every': 5,  # Plot variance schedule every 10 epochs
+        'validate_every': 1,        # Run validation every epoch
+        
         'device': 'cuda' if torch.cuda.is_available() else 'cpu',
         'lr': 2e-4,
         'batch_size': 64,
-        'epochs': 1000,
+        'epochs': 100,
         'save_dir': './checkpoints',
-        'embedding_dim': 64,
-        'n_blocks': 16,
-        'n_attention_heads': 8,
+        
+        'embedding_dim': 192,
+        'n_blocks': 12,
+        'n_attention_heads': 4,
         'dropout_prob': 0.1,
-        'norm_groups': 32,
+        'norm_groups': 16,
         'input_channels': 3,
+        
         'gamma_min': -13.3,
         'gamma_max': 5.0,
         'vocab_size': 256,
         'T': 1000,
         'use_fourier_features': True,
-        'attention_everywhere': True,
+        'attention_everywhere': False,
         'num_samples': 64,
         'sample_path': './samples',
         'learned_schedule': True,
-        'best_model_path': 'learned_best_model2.pt',
-        'last_model_path': 'learned_last_model2.pt',
-    }
+        'best_model_path': 'learned_best_model.pt',
+        'last_model_path': 'learned_last_model.pt',
+        }
 
 def init_models():
     unet = UNet(
@@ -63,6 +76,24 @@ def train(vdm, unet):
     total_params = sum(p.numel() for p in unet.parameters())
     trainable_params = sum(p.numel() for p in unet.parameters() if p.requires_grad)
     data_provider = DataProvider(batch_size=CONFIG['batch_size'], num_workers=4)
+    
+    # Initialize WandB and log config
+    
+    if CONFIG.get("use_wandb", False):
+        important_keys = ['lr', 'batch_size', 'epochs', 'embedding_dim', 'n_blocks', 'n_attention_heads', 'dropout_prob', 'norm_groups', 'gamma_min', 'gamma_max', 'T', 'learned_schedule', 'attention_everywhere', 'use_fourier_features']
+        wandb_config = {key: CONFIG[key] for key in important_keys}
+        wandb.init(
+            project=CONFIG.get("wandb_project", "vdm"),
+            entity=CONFIG.get("wandb_entity", None),
+            name=CONFIG.get("wandb_run_name", None),
+            config=wandb_config,
+        )
+
+        wandb.config.update({
+            "total_params": total_params,
+            "trainable_params": trainable_params
+        })
+    
     trainer = Trainer(vdm, data_provider, CONFIG)
 
     print(f"\n{'='*70}")
@@ -86,6 +117,10 @@ def train(vdm, unet):
     print(f"{'='*70}\n")
 
     sample(vdm)
+    
+    if CONFIG.get("use_wandb", False):
+        wandb.finish()
+
 
 def sample(vdm):
     print("Sampling...")
@@ -111,6 +146,16 @@ def sample(vdm):
     plt.tight_layout()
     plt.savefig(os.path.join(CONFIG['sample_path'], "generated_samples.png"), dpi=150, bbox_inches='tight')
     print(f"✓ Samples saved to {os.path.join(CONFIG['sample_path'], 'generated_samples.png')}")
+    
+    # Log samples to WandB
+    if CONFIG.get("use_wandb", False):
+        wandb.log({
+            "samples": wandb.Image(
+                os.path.join(CONFIG['sample_path'], "generated_samples.png"),
+                caption="VDM Generated Samples"
+            )
+        })
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
