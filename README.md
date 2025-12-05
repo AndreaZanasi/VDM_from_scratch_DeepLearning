@@ -19,6 +19,7 @@ Then run:
 python main.py --mode sample
 ```
 ## Artifacts
-[Model - learned scheduler] (https://wandb.ai/DL_group99/VDM-CIFAR10/reports/Model-checkpoint-learned-scheduler--VmlldzoxNTI4MzE5NQ?accessToken=ez34za31ulodcicshn81ekigkw7ecda2fjhslmvpnfwh1284mnpf4qyjzqj82263)
-[Model - fixed linear scheduler] (https://wandb.ai/DL_group99/VDM-CIFAR10/reports/Model-checkpoints-fixed-linear-scheduler--VmlldzoxNTI4MzE4NA?accessToken=dp3ozzmfhnv8u97nw7ibxiz5jf5mnq1fuz0gzbjo4ggpgkbqdfjofs3eipnvix7p)
+To download weights for learned scheduler visit: [Model - learned scheduler](https://wandb.ai/DL_group99/VDM-CIFAR10/reports/Model-checkpoint-learned-scheduler--VmlldzoxNTI4MzE5NQ?accessToken=ez34za31ulodcicshn81ekigkw7ecda2fjhslmvpnfwh1284mnpf4qyjzqj82263)
+
+To download weights for fixed linear scheduler visit: [Model - fixed linear scheduler](https://wandb.ai/DL_group99/VDM-CIFAR10/reports/Model-checkpoints-fixed-linear-scheduler--VmlldzoxNTI4MzE4NA?accessToken=dp3ozzmfhnv8u97nw7ibxiz5jf5mnq1fuz0gzbjo4ggpgkbqdfjofs3eipnvix7p)
 
