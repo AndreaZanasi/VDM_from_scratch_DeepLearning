@@ -4,6 +4,14 @@ This repository contains the implementation and training code for a **Variationa
 
 ---
 
+
+## Artifacts
+To download weights for learned scheduler visit: [Model - learned scheduler](https://wandb.ai/DL_group99/VDM-CIFAR10/reports/Model-checkpoint-learned-scheduler--VmlldzoxNTI4MzE5NQ?accessToken=ez34za31ulodcicshn81ekigkw7ecda2fjhslmvpnfwh1284mnpf4qyjzqj82263)
+
+To download weights for fixed linear scheduler visit: [Model - fixed linear scheduler](https://wandb.ai/DL_group99/VDM-CIFAR10/reports/Model-checkpoints-fixed-linear-scheduler--VmlldzoxNTI4MzE4NA?accessToken=dp3ozzmfhnv8u97nw7ibxiz5jf5mnq1fuz0gzbjo4ggpgkbqdfjofs3eipnvix7p)
+
+Place the checkpoints file in `./checkpoints` folder
+
 ## Training
 
 To train the model from scratch:
@@ -13,13 +21,9 @@ python main.py --mode train
 ```
 
 ## Sampling
-To generate samples with a model from `./checkpoints` folder, edit the set the "use_learned_scheduler" in CONFIG in main.py according to the model.
+To generate samples with a model from `./checkpoints` folder, adjust the `use_learned_scheduler` and `best_model_path` parameters in `CONFIG` in main.py according to the model.
 Then run:
 ```bash
 python main.py --mode sample
 ```
-## Artifacts
-To download weights for learned scheduler visit: [Model - learned scheduler](https://wandb.ai/DL_group99/VDM-CIFAR10/reports/Model-checkpoint-learned-scheduler--VmlldzoxNTI4MzE5NQ?accessToken=ez34za31ulodcicshn81ekigkw7ecda2fjhslmvpnfwh1284mnpf4qyjzqj82263)
-
-To download weights for fixed linear scheduler visit: [Model - fixed linear scheduler](https://wandb.ai/DL_group99/VDM-CIFAR10/reports/Model-checkpoints-fixed-linear-scheduler--VmlldzoxNTI4MzE4NA?accessToken=dp3ozzmfhnv8u97nw7ibxiz5jf5mnq1fuz0gzbjo4ggpgkbqdfjofs3eipnvix7p)
 
